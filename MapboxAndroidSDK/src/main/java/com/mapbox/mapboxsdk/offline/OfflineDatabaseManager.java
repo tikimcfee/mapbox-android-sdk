@@ -65,4 +65,19 @@ public class OfflineDatabaseManager {
         databaseHandlers.put(key, dbh);
         return true;
     }
+
+    public boolean switchHandlerFromPartialToRegular(String mapId, String newUniquedID) {
+        if (TextUtils.isEmpty(mapId) || TextUtils.isEmpty(newUniquedID)) {
+            return false;
+        }
+        String key = mapId.toLowerCase();
+        if (!databaseHandlers.containsKey(key)) {
+            return false;
+        }
+
+        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, key);
+        databaseHandlers.remove(key);
+        databaseHandlers.put(newUniquedID, dbh);
+        return true;
+    }
 }

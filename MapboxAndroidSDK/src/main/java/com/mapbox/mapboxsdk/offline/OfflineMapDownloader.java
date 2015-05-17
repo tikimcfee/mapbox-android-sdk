@@ -6,6 +6,8 @@ import android.content.ContextWrapper;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.AsyncTask;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.Log;
 import com.mapbox.mapboxsdk.constants.MapboxConstants;
@@ -29,11 +31,10 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Hashtable;
-import java.util.List;
-import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 
 public class OfflineMapDownloader implements MapboxConstants {
 
@@ -42,6 +43,8 @@ public class OfflineMapDownloader implements MapboxConstants {
     private static OfflineMapDownloader offlineMapDownloader;
 
     private ArrayList<OfflineMapDownloaderListener> listeners;
+
+//    private ArrayList<CoordinateRegion> mMapRegionsForDownload;
 
     private Context context;
 
@@ -81,6 +84,12 @@ public class OfflineMapDownloader implements MapboxConstants {
 
 
     private ArrayList<OfflineMapDatabase> mutableOfflineMapDatabases;
+
+    // TODO : IVAN : Instantiate and use this to get all your URLs all persisted and stuff, it'll be great
+    private SQLiteDatabase pendingURLSLocaleStore;
+    private Cursor currentURLCursor;
+    private int markerIconURLStringsCount;
+    private String currentOfflineMapIdentifier;
 
 /*
     // Don't appear to be needed as there's one database per app for offline maps
@@ -193,18 +202,27 @@ public class OfflineMapDownloader implements MapboxConstants {
         // Rename database file (remove -PARTIAL) and update path in db object, update path in OfflineMapDatabase, create new Handler
         SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getReadableDatabase();
         String dbPath = db.getPath();
-        db.close();
 
         if (dbPath.endsWith("-PARTIAL")) {
             // Rename SQLlite database file
             File oldDb = new File(dbPath);
-            String newDb = dbPath.substring(0, dbPath.indexOf("-PARTIAL"));
+//            String newDb = dbPath.substring(0, dbPath.indexOf("-PARTIAL"));
+            // TODO : IVAN : Use the current unique download ID to rename the db.
+            if(currentOfflineMapIdentifier == null) {
+                Log.d("OFFLINE_PERSIST", "Save will fail - unique identifier not properly set. Stopping save.");
+                return null;
+            }
+            String newDb = currentOfflineMapIdentifier;
             boolean result = oldDb.renameTo(new File(newDb));
             Log.i(TAG, "Result of rename = " + result + " for oldDb = '" + dbPath + "'; newDB = '" + newDb + "'");
         }
 
         // Update Database Handler
-        OfflineDatabaseManager.getOfflineDatabaseManager(context).switchHandlerFromPartialToRegular(mapID);
+        if(currentOfflineMapIdentifier == null) {
+            Log.d("OFFLINE_PERSIST", "Save will fail - unique identifier not properly set. Stopping save.");
+            return null;
+        }
+        OfflineDatabaseManager.getOfflineDatabaseManager(context).switchHandlerFromPartialToRegular(mapID, currentOfflineMapIdentifier);
 
         // Create DB object and return
         OfflineMapDatabase offlineMapDatabase = new OfflineMapDatabase(context, mapID);
@@ -237,7 +255,6 @@ public class OfflineMapDownloader implements MapboxConstants {
 */
     }
 
-
     public void startDownloading() {
 /*
         // Shouldn't need to check as all downloading will happen in background thread
@@ -253,86 +270,247 @@ public class OfflineMapDownloader implements MapboxConstants {
 
 //        [_sqliteQueue addOperationWithBlock:^{
         // Get the actual URLs
-        ArrayList<String> urls = sqliteReadArrayOfOfflineMapURLsToBeDownloadLimit(-1);
-        Log.d(TAG, String.format(MAPBOX_LOCALE, "number of urls to download = %d", urls.size()));
+        // TODO : (A) This is where we need to read out of the DB row by row, instead of in a potentially massive arraylist
+//        ArrayList<String> urls = sqliteReadArrayOfOfflineMapURLsToBeDownloadLimit(-1);
+        Cursor pendingURLSCursor = getPendingURLSCursor();
+        Log.d(TAG, String.format(MAPBOX_LOCALE, "number of urls to download = %d", pendingURLSCursor.getCount()));
 
         int totalDiff = this.totalFilesExpectedToWrite - this.totalFilesWritten;
-        if (urls.size() != totalDiff) {
+        if (pendingURLSCursor.getCount() != totalDiff) {
             // Something is off
-            Log.w(TAG, String.format(MAPBOX_LOCALE, "totalDiff %d does not equal urls size of %d.  This is a problem.  Returning.", totalDiff, urls.size()));
+            Log.w(TAG, String.format(MAPBOX_LOCALE, "totalDiff %d does not equal urls size of %d.  This is a problem.  Returning.", totalDiff, pendingURLSCursor.getCount()));
             return;
-        } else if (urls.size() == 0 && totalDiff == 0) {
+        } else if (pendingURLSCursor.getCount() == 0 && totalDiff == 0) {
             // All files are downloaded, but hasn't been persisted yet.
             finishUpDownloadProcess();
             return;
         }
 
-        for (final String url : urls) {
-/*
-            if (!NetworkUtils.isNetworkAvailable(context)) {
-                Log.w(TAG, "Network is no longer available.");
-//                    [self notifyDelegateOfNetworkConnectivityError:error];
+        // Create a blocking queue of downloads.. this is probably a little naive, but it'll work for basic rate limiting
+        // getBlockingQueueForDownloads()
+        final BlockingQueue<URLDownloadTask> downloadQueue = new ArrayBlockingQueue<>(3);
+        final BlockingQueue<Object> finishedDownloadTokenQueue = new ArrayBlockingQueue<Object>(3);
+
+        // TODO : (B) The loop for (A) that actually creates the async download tasks
+        URLDownloaderProducer urlDownloaderProducer = new URLDownloaderProducer(pendingURLSCursor, downloadQueue, finishedDownloadTokenQueue);
+        URLDownloadConsumer urlDownloadConsumer = new URLDownloadConsumer(downloadQueue);
+        Thread producer = new Thread(urlDownloaderProducer);
+        producer.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread thread, Throwable throwable) {
+                Log.d("DOWNLOADER_EXCEPTION", throwable.getLocalizedMessage());
             }
-*/
+        });
+        Thread consumer = new Thread(urlDownloadConsumer);
+        consumer.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread thread, Throwable throwable) {
+                Log.d("DOWNLOADER_EXCEPTION", throwable.getLocalizedMessage());
+            }
+        });
+        producer.start();
+        consumer.start();
+    }
 
-            AsyncTask<String, Void, Void> foo = new AsyncTask<String, Void, Void>() {
-                @Override
-                protected Void doInBackground(String... params) {
-                    HttpURLConnection conn = null;
-                    try {
-                        conn = NetworkUtils.getHttpURLConnection(new URL(params[0]));
-                        Log.d(TAG, "URL to download = " + conn.getURL().toString());
-                        conn.setConnectTimeout(60000);
-                        conn.connect();
-                        int rc = conn.getResponseCode();
-                        if (rc != HttpURLConnection.HTTP_OK) {
-                            String msg = String.format(MAPBOX_LOCALE, "HTTP Error connection.  Response Code = %d for url = %s", rc, conn.getURL().toString());
-                            Log.w(TAG, msg);
-                            notifyDelegateOfHTTPStatusError(rc, params[0]);
-                            throw new IOException(msg);
-                        }
+    private class URLDownloaderProducer implements Runnable {
+        private BlockingQueue<URLDownloadTask> mBlockingQueue;
+        private BlockingQueue<Object> mFinishedQueue;
+        private Cursor mCursor;
 
-                        ByteArrayOutputStream bais = new ByteArrayOutputStream();
-                        InputStream is = null;
-                        try {
-                            is = conn.getInputStream();
-                            // Read 4K at a time
-                            byte[] byteChunk = new byte[4096];
-                            int n;
+        URLDownloaderProducer(Cursor cursor, BlockingQueue<URLDownloadTask> blockingQueue, BlockingQueue<Object> finishedQueue) {
+            mCursor = cursor;
+            mBlockingQueue = blockingQueue;
+            mFinishedQueue = finishedQueue;
+        }
 
-                            while ((n = is.read(byteChunk)) > 0) {
-                                bais.write(byteChunk, 0, n);
-                            }
-                        } catch (IOException e) {
-                            Log.e(TAG, String.format(MAPBOX_LOCALE, "Failed while reading bytes from %s: %s", conn.getURL().toString(), e.getMessage()));
-                            e.printStackTrace();
-                        } finally {
-                            if (is != null) {
-                                is.close();
-                            }
-                            conn.disconnect();
-                        }
-                        sqliteSaveDownloadedData(bais.toByteArray(), url);
-                    } catch (IOException e) {
-                        Log.e(TAG, e.getMessage());
-                        e.printStackTrace();
-                    } finally {
-                        if (conn != null) {
-                            conn.disconnect();
-                        }
+        @Override
+        public void run() {
+            int totalRunning = 0;
+            do {
+                String currentURL = mCursor.getString(0);
+                Object token = new Object();
+                URLDownloadTask backgroundDownload = new URLDownloadTask(currentURL, token, mFinishedQueue);
+                try {
+                    mBlockingQueue.put(backgroundDownload);
+                    totalRunning++;
+                    if(totalRunning == 2) {
+                        mFinishedQueue.take();
+                        totalRunning --;
                     }
-
-                    return null;
+                } catch (InterruptedException e) {
+                    Log.d(TAG, "Unable to queue up download; tile download will NOT be retried; leaving.");
+                    e.printStackTrace();
                 }
-            };
-            foo.execute(url);
-            // This is the last line of the for loop
+
+            } while (mCursor.moveToNext());
+
+            URLDownloadTask poisoned = new URLDownloadTask(true);
+            try {
+                mBlockingQueue.put(poisoned);
+                while(mFinishedQueue.remainingCapacity() != 3) {
+                    mFinishedQueue.take();
+                }
+            } catch (InterruptedException e) {
+                Log.d(TAG, "Unable to queue up download; tile download will NOT be retried; leaving.");
+                e.printStackTrace();
+            }
+        }
+    }
+    private class URLDownloadConsumer implements Runnable {
+        private BlockingQueue<URLDownloadTask> mBlockingQueue;
+
+        URLDownloadConsumer(BlockingQueue<URLDownloadTask> blockingQueue) {
+            mBlockingQueue = blockingQueue;
+        }
+
+        @Override
+        public void run() {
+            try {
+                while(true) {
+                    URLDownloadTask thisTask = mBlockingQueue.take();
+                    if (thisTask.STOP_POISON == true) {
+                        return;
+                    } else {
+                        Thread downloadTask = new Thread(thisTask);
+                        downloadTask.setUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                            @Override
+                            public void uncaughtException(Thread thread, Throwable throwable) {
+                                Log.d("CONSUMER_EXCEPTION", throwable.getLocalizedMessage());
+                            }
+                        });
+                        downloadTask.start();
+                    }
+                }
+            } catch (InterruptedException e) {
+                Log.d(TAG, "Interruped while waiting; tile download will NOT started; leaving.");
+                e.printStackTrace();
+            }
+
+        }
+    }
+    private class URLDownloadTask implements Runnable {
+
+        private URL mURL;
+        private String mURLString;
+        private Object mFinishedToken;
+        private BlockingQueue<Object> mFinishedQueue;
+        public boolean STOP_POISON;
+
+        URLDownloadTask(String url, Object token, BlockingQueue<Object> finishedQueue) {
+            mURLString = url;
+            try {
+                mURL = new URL(url);
+            } catch (MalformedURLException e) {
+                Log.d(TAG, "Malformed URL in download thread; failing");
+                e.printStackTrace();
+            }
+            mFinishedToken = token;
+            mFinishedQueue = finishedQueue;
+        }
+
+        URLDownloadTask(boolean stop) {
+            STOP_POISON = stop;
+        }
+
+        @Override
+        public void run() {
+            HttpURLConnection conn = null;
+            Log.w(TAG, "DO IN BACKGROUND");
+            try {
+//                URL thisURL = new URL(currentURL);
+                conn = NetworkUtils.getHttpURLConnection(mURL);
+                Log.d(TAG, "URL to download = " + conn.getURL().toString());
+                conn.setConnectTimeout(60000);
+                conn.connect();
+                int rc = conn.getResponseCode();
+                if (rc != HttpURLConnection.HTTP_OK) {
+                    String msg = String.format(MAPBOX_LOCALE, "HTTP Error connection.  Response Code = %d for url = %s", rc, conn.getURL().toString());
+                    Log.w(TAG, msg);
+                    notifyDelegateOfHTTPStatusError(rc, mURLString);
+                    throw new IOException(msg);
+                }
+
+                ByteArrayOutputStream bais = new ByteArrayOutputStream();
+                InputStream is = null;
+                try {
+                    is = conn.getInputStream();
+                    // Read 4K at a time
+                    byte[] byteChunk = new byte[4096];
+                    int n;
+
+                    while ((n = is.read(byteChunk)) > 0) {
+                        bais.write(byteChunk, 0, n);
+                    }
+                } catch (IOException e) {
+                    Log.e(TAG, String.format(MAPBOX_LOCALE, "Failed while reading bytes from %s: %s", conn.getURL().toString(), e.getMessage()));
+                    e.printStackTrace();
+                } finally {
+                    if (is != null) {
+                        is.close();
+                    }
+                    conn.disconnect();
+                }
+                sqliteSaveDownloadedData(bais.toByteArray(), mURLString);
+            } catch (IOException e) {
+                Log.e(TAG, e.getMessage());
+                e.printStackTrace();
+            } finally {
+                if (conn != null) {
+                    conn.disconnect();
+                }
+            }
+            try {
+                mFinishedQueue.put(mFinishedToken);
+            } catch (InterruptedException e) {
+                Log.d("CONSUMER_EXCEPTION", "Interrupted while pushing in finish token; deadlock imminent.");
+                e.printStackTrace();
+            }
         }
     }
 
-/*
+    /*
     Implementation: sqlite stuff
 */
+    // TODO : IVAN : Adding method for adding url... cleanly?
+    static ContentValues reusedContentValues = new ContentValues();
+    public void insertPendingURLIntoLocalStore(final String url) {
+        if(pendingURLSLocaleStore == null) {
+            Log.w(TAG, "Local store of pending URLs not instantiated. Insertion will fail - escaping.");
+            return;
+        }
+//        ContentValues cv = new ContentValues();
+        reusedContentValues.clear();
+        reusedContentValues.put(OfflineDatabaseHandler.FIELD_RESOURCES_URL, url);
+        pendingURLSLocaleStore.insertWithOnConflict(OfflineDatabaseHandler.TABLE_RESOURCES, null, reusedContentValues, SQLiteDatabase.CONFLICT_REPLACE);
+        totalFilesExpectedToWrite++;
+    }
+
+    // TODO : IVAN : Add cleanup of pending URLs
+    public void cleanPendingURLLocalStore() {
+        if(pendingURLSLocaleStore == null) {
+            Log.w(TAG, "Local store of pending URLs not instantiated. Cleaning will fail - escaping.");
+            return;
+        }
+
+        pendingURLSLocaleStore.delete(OfflineDatabaseHandler.TABLE_METADATA, null, null);
+    }
+
+    // TODO : IVAN : Get a metadata ready writable local store for URLs
+    public SQLiteDatabase getWritablePendingURLLocalStoreUsingMetadata(Hashtable<String, String> metadata) {
+//        if (AppUtils.runningOnMainThread()) {
+//            Log.w(TAG, "sqliteCreateDatabaseUsingMetadata() running on main thread.  Returning.");
+//            return null;
+//        }
+        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getWritableDatabase();
+        for (String key : metadata.keySet()) {
+            ContentValues cv = new ContentValues();
+            cv.put(OfflineDatabaseHandler.FIELD_METADATA_NAME, key);
+            cv.put(OfflineDatabaseHandler.FIELD_METADATA_VALUE, metadata.get(key));
+            db.replace(OfflineDatabaseHandler.TABLE_METADATA, null, cv);
+        }
+
+        return db;
+    }
 
     public void sqliteSaveDownloadedData(byte[] data, String url) {
         if (AppUtils.runningOnMainThread()) {
@@ -366,7 +544,6 @@ public class OfflineMapDownloader implements MapboxConstants {
         db.execSQL(String.format(MAPBOX_LOCALE, "UPDATE %s SET %s=200, %s=last_insert_rowid() WHERE %s='%s';", OfflineDatabaseHandler.TABLE_RESOURCES, OfflineDatabaseHandler.FIELD_RESOURCES_STATUS, OfflineDatabaseHandler.FIELD_RESOURCES_ID, OfflineDatabaseHandler.FIELD_RESOURCES_URL, url));
         db.setTransactionSuccessful();
         db.endTransaction();
-        db.close();
 
 /*
         if(error)
@@ -413,6 +590,12 @@ public class OfflineMapDownloader implements MapboxConstants {
             Log.i(TAG, "Just finished downloading all materials.  Persist the OfflineMapDatabase, change the state, and call it a day.");
             // This is what to do when we've downloaded all the files
             //
+            if(pendingURLSLocaleStore != null) {
+                pendingURLSLocaleStore.close();
+            }
+            if(currentURLCursor != null) {
+                currentURLCursor.close();
+            }
             // Populate OfflineMapDatabase object and persist it
             OfflineMapDatabase offlineMap = completeDatabaseAndInstantiateOfflineMapWithError();
             if (offlineMap != null) {
@@ -425,33 +608,23 @@ public class OfflineMapDownloader implements MapboxConstants {
         }
     }
 
-    public ArrayList<String> sqliteReadArrayOfOfflineMapURLsToBeDownloadLimit(int limit) {
-        ArrayList<String> results = new ArrayList<String>();
-        if (AppUtils.runningOnMainThread()) {
-            Log.w(TAG, "Attempting to run sqliteReadArrayOfOfflineMapURLsToBeDownloadLimit() on main thread.  Returning.");
-            return results;
-        }
+    public Cursor getPendingURLSCursor() {
+//        if (AppUtils.runningOnMainThread()) {
+//            Log.w(TAG, "Attempting to run sqliteReadArrayOfOfflineMapURLsToBeDownloadLimit() on main thread.  Returning.");
+//            return null;
+//        }
 
-        // Read up to limit undownloaded urls from the offline map database
-        //
         String query = String.format(MAPBOX_LOCALE, "SELECT %s FROM %s WHERE %s IS NULL", OfflineDatabaseHandler.FIELD_RESOURCES_URL, OfflineDatabaseHandler.TABLE_RESOURCES, OfflineDatabaseHandler.FIELD_RESOURCES_STATUS);
-        if (limit > 0) {
-            query = query + String.format(MAPBOX_LOCALE, " LIMIT %d", limit);
-        }
-        query = query + ";";
 
-        // Open the database
         SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getReadableDatabase();
         Cursor cursor = db.rawQuery(query, null);
-        if (cursor.moveToFirst()) {
-            do {
-                results.add(cursor.getString(0));
-            } while (cursor.moveToNext());
+        if (!cursor.moveToFirst()) {
+            Log.w(TAG, "Cursor failed to move to first; iteration will fail. Returning null.");
+            return null;
         }
-        cursor.close();
-        db.close();
 
-        return results;
+        currentURLCursor = cursor;
+        return cursor;
     }
 
     public boolean sqliteQueryWrittenAndExpectedCountsWithError() {
@@ -468,95 +641,28 @@ public class OfflineMapDownloader implements MapboxConstants {
         cursor.moveToFirst();
         this.totalFilesExpectedToWrite = cursor.getInt(0);
         this.totalFilesWritten = cursor.getInt(1);
-        cursor.close();
-        db.close();
         success = true;
 
-        return success;
-    }
-
-    public boolean sqliteCreateDatabaseUsingMetadata(Hashtable<String, String> metadata, List<String> urlStrings) {
-        if (AppUtils.runningOnMainThread()) {
-            Log.w(TAG, "sqliteCreateDatabaseUsingMetadata() running on main thread.  Returning.");
-            return false;
-        }
-
-        boolean success = false;
-
-        // Build a query to populate the database (map metadata and list of map resource urls)
-        //
-/*
-        NSMutableString *query = [[NSMutableString alloc] init];
-        [query appendString:@"PRAGMA foreign_keys=ON;\n"];
-        [query appendString:@"BEGIN TRANSACTION;\n"];
-        [query appendString:@"CREATE TABLE metadata (name TEXT UNIQUE, value TEXT);\n"];
-        [query appendString:@"CREATE TABLE data (id INTEGER PRIMARY KEY, value BLOB);\n"];
-        [query appendString:@"CREATE TABLE resources (url TEXT UNIQUE, status TEXT, id INTEGER REFERENCES data);\n"];
-*/
-        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getWritableDatabase();
-        db.beginTransaction();
-        for (String key : metadata.keySet()) {
-            ContentValues cv = new ContentValues();
-            cv.put(OfflineDatabaseHandler.FIELD_METADATA_NAME, key);
-            cv.put(OfflineDatabaseHandler.FIELD_METADATA_VALUE, metadata.get(key));
-            db.replace(OfflineDatabaseHandler.TABLE_METADATA, null, cv);
-        }
-        for (String url : urlStrings) {
-            ContentValues cv = new ContentValues();
-            cv.put(OfflineDatabaseHandler.FIELD_RESOURCES_URL, url);
-            db.insert(OfflineDatabaseHandler.TABLE_RESOURCES, null, cv);
-        }
-        db.setTransactionSuccessful();
-        db.endTransaction();
-        db.close();
-        this.totalFilesExpectedToWrite = urlStrings.size();
-        this.totalFilesWritten = 0;
-        success = true;
-/*
-        // Open the database read-write and multi-threaded. The slightly obscure c-style variable names here and below are
-        // used to stay consistent with the sqlite documentaion.
-        sqlite3 *db;
-        int rc;
-        const char *filename = [_partialDatabasePath cStringUsingEncoding:NSUTF8StringEncoding];
-        rc = sqlite3_open_v2(filename, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
-        if (rc)
-        {
-            // Opening the database failed... something is very wrong.
-            //
-            if(error != NULL)
-            {
-                *error = [NSError mbx_errorCannotOpenOfflineMapDatabase:_partialDatabasePath sqliteError:sqlite3_errmsg(db)];
-            }
-            sqlite3_close(db);
-        }
-        else
-        {
-            // Success! Creating the database file worked, so now populate the tables we'll need to hold the offline map
-            //
-            const char *zSql = [query cStringUsingEncoding:NSUTF8StringEncoding];
-            char *errmsg;
-            sqlite3_exec(db, zSql, NULL, NULL, &errmsg);
-            if(error && errmsg != NULL)
-            {
-                *error = [NSError mbx_errorQueryFailedForOfflineMapDatabase:_partialDatabasePath sqliteError:errmsg];
-                sqlite3_free(errmsg);
-            }
-            sqlite3_close(db);
-            success = YES;
-        }
-*/
         return success;
     }
 
 /*
     API: Begin an offline map download
 */
+//    public void beginDownloadingMapID(String mapID, Integer minimumZ, Integer maximumZ, boolean includeMetadata, boolean includeMarkers) {
+//        beginDownloadingMapID(mapID, mapRegion, minimumZ, maximumZ, includeMetadata, includeMarkers, RasterImageQuality.MBXRasterImageQualityFull);
+//    }
 
     public void beginDownloadingMapID(String mapID, CoordinateRegion mapRegion, Integer minimumZ, Integer maximumZ) {
         beginDownloadingMapID(mapID, mapRegion, minimumZ, maximumZ, true, true, RasterImageQuality.MBXRasterImageQualityFull);
     }
 
     public void beginDownloadingMapID(String mapID, CoordinateRegion mapRegion, Integer minimumZ, Integer maximumZ, boolean includeMetadata, boolean includeMarkers) {
+        beginDownloadingMapID(mapID, mapRegion, minimumZ, maximumZ, includeMetadata, includeMarkers, RasterImageQuality.MBXRasterImageQualityFull);
+    }
+
+    public void beginDownloadingMapID(String mapID, String finalizationID, CoordinateRegion mapRegion, Integer minimumZ, Integer maximumZ, boolean includeMetadata, boolean includeMarkers) {
+        this.currentOfflineMapIdentifier = finalizationID;
         beginDownloadingMapID(mapID, mapRegion, minimumZ, maximumZ, includeMetadata, includeMarkers, RasterImageQuality.MBXRasterImageQualityFull);
     }
 
@@ -568,10 +674,11 @@ public class OfflineMapDownloader implements MapboxConstants {
         }
 
         // Make sure this completed map doesn't exist already
-        if (isMapIdAlreadyAnOfflineMapDatabase(mapID)) {
-            Log.w(TAG, String.format(MAPBOX_LOCALE, "MapId '%s' has already been downloaded.  Please delete it before trying to download again.", mapID));
-            return;
-        }
+        // TODO : IVAN : Check against SightPlan Mobile iOS code ; how is it checking for existing maps?
+//        if (isMapIdAlreadyAnOfflineMapDatabase(mapID)) {
+//            Log.w(TAG, String.format(MAPBOX_LOCALE, "MapId '%s' has already been downloaded.  Please delete it before trying to download again.", mapID));
+//            return;
+//        }
 
 //        [self setUpNewDataSession];
 
@@ -603,17 +710,24 @@ public class OfflineMapDownloader implements MapboxConstants {
         metadataDictionary.put("minimumZ", String.format(MAPBOX_LOCALE, "%d", this.minimumZ));
         metadataDictionary.put("maximumZ", String.format(MAPBOX_LOCALE, "%d", this.maximumZ));
 
-        final ArrayList<String> urls = new ArrayList<String>();
+        // TODO : IVAN : Recreate the pending URL store every time we're asked to download maps,
+        //              assuming the call has been made for a new region
+//        final ArrayList<String> urls = new ArrayList<String>();
+//        if (pendingURLSLocaleStore == null ) {
+        pendingURLSLocaleStore = getWritablePendingURLLocalStoreUsingMetadata(metadataDictionary);
+//        }
 
         String dataName = "features.json";    // Only using API V4 for now
 
         // Include URLs for the metadata and markers json if applicable
         //
         if (includeMetadata) {
-            urls.add(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s.json?secure&access_token=%s", this.mapID, MapboxUtils.getAccessToken()));
+//            urls.add(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s.json?secure&access_token=%s", this.mapID, MapboxUtils.getAccessToken()));
+            insertPendingURLIntoLocalStore(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s.json?secure&access_token=%s", this.mapID, MapboxUtils.getAccessToken()));
         }
         if (includeMarkers) {
-            urls.add(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s/%s?access_token=%s", this.mapID, dataName, MapboxUtils.getAccessToken()));
+//            urls.add(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s/%s?access_token=%s", this.mapID, dataName, MapboxUtils.getAccessToken()));
+            insertPendingURLIntoLocalStore(String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s/%s?access_token=%s", this.mapID, dataName, MapboxUtils.getAccessToken()));
         }
 
         // Loop through the zoom levels and lat/lon bounds to generate a list of urls which should be included in the offline map
@@ -635,11 +749,16 @@ public class OfflineMapDownloader implements MapboxConstants {
             maxY = Double.valueOf(Math.floor((1.0 - (Math.log(Math.tan(minLat * MathConstants.PI / 180.0) + 1.0 / Math.cos(minLat * MathConstants.PI / 180.0)) / MathConstants.PI)) / 2.0 * tilesPerSide)).intValue();
             for (int x = minX; x <= maxX; x++) {
                 for (int y = minY; y <= maxY; y++) {
-                    urls.add(MapboxUtils.getMapTileURL(context, this.mapID, zoom, x, y, this.imageQuality));
+                    // TODO : This actually adds the computed URL to the arraylist instantiated above. we need to add this to the DB instead
+//                    urls.add(MapboxUtils.getMapTileURL(context, this.mapID, zoom, x, y, this.imageQuality));
+                    insertPendingURLIntoLocalStore(MapboxUtils.getMapTileURL(context, this.mapID, zoom, x, y, this.imageQuality));
                 }
             }
         }
-        Log.i(TAG, "Number of URLs so far: " + urls.size());
+
+
+//        Log.i(TAG, "Number of URLs so far: " + urls.size());
+        Log.i(TAG, "Number of URLs so far: " + totalFilesExpectedToWrite);
 
         // Determine if we need to add marker icon urls (i.e. parse markers.geojson/features.json), and if so, add them
         //
@@ -679,12 +798,13 @@ public class OfflineMapDownloader implements MapboxConstants {
                         // try to save it here, because it may already be in the download queue and saving it twice will mess
                         // up the count of urls to be downloaded!
                         //
-                        Set<String> markerIconURLStrings = new HashSet<String>();
-                        markerIconURLStrings.addAll(parseMarkerIconURLStringsFromGeojsonData(jsonText));
-                        Log.i(TAG, "Number of markerIconURLs = " + markerIconURLStrings.size());
-                        if (markerIconURLStrings.size() > 0) {
-                            urls.addAll(markerIconURLStrings);
-                        }
+//                        Set<String> markerIconURLStrings = new HashSet<String>();
+//                        markerIconURLStrings.addAll(parseMarkerIconURLStringsFromGeojsonData(jsonText));
+                        parseMarkerIconURLStringsFromGeojsonData(jsonText);
+                        Log.i(TAG, "Number of markerIconURLs = " + markerIconURLStringsCount);
+//                        if (markerIconURLStrings.size() > 0) {
+//                            urls.addAll(markerIconURLStrings);
+//                        }
                     } catch (MalformedURLException e) {
                         e.printStackTrace();
                     } catch (IOException e) {
@@ -711,46 +831,35 @@ public class OfflineMapDownloader implements MapboxConstants {
                     // == This stuff is a duplicate of the code immediately below it, but this copy is inside of a completion  ==
                     // == block while the other isn't. You will be sad and confused if you try to eliminate the "duplication". ==
                     //===========================================================================================================
-                    startDownloadProcess(metadataDictionary, urls);
+                    startDownloadProcess();
                 }
             };
             foo.execute();
         } else {
             Log.i(TAG, "No marker icons to worry about, so just start downloading.");
             // There aren't any marker icons to worry about, so just create database and start downloading
-            startDownloadProcess(metadataDictionary, urls);
+            startDownloadProcess();
         }
     }
 
     /**
      * Private method for Starting the Whole Download Process
      *
-     * @param metadata Metadata
-     * @param urls     Map urls
      */
-    private void startDownloadProcess(final Hashtable<String, String> metadata, final List<String> urls) {
-        AsyncTask<Void, Void, Thread> startDownload = new AsyncTask<Void, Void, Thread>() {
-            @Override
-            protected Thread doInBackground(Void... params) {
-                // Do database creation / io on background thread
-                if (!sqliteCreateDatabaseUsingMetadata(metadata, urls)) {
-                    cancelImmediatelyWithError("Map Database wasn't created");
-                    return null;
-                }
-                notifyDelegateOfInitialCount();
-                startDownloading();
-                return null;
-            }
+    private void startDownloadProcess() {
 
-        };
-
-        // Create the database and start the download
-        startDownload.execute();
+        if (pendingURLSLocaleStore == null) {
+            cancelImmediatelyWithError("Map Database wasn't created");
+            return;
+        }
+        notifyDelegateOfInitialCount();
+        startDownloading();
     }
 
 
-    public Set<String> parseMarkerIconURLStringsFromGeojsonData(String data) {
-        HashSet<String> iconURLStrings = new HashSet<String>();
+//    public Set<String> parseMarkerIconURLStringsFromGeojsonData(String data) {
+    public void parseMarkerIconURLStringsFromGeojsonData(String data) {
+//        HashSet<String> iconURLStrings = new HashSet<String>();
 
         JSONObject simplestyleJSONDictionary = null;
         try {
@@ -774,8 +883,9 @@ public class OfflineMapDownloader implements MapboxConstants {
                             if (!TextUtils.isEmpty(size) && !TextUtils.isEmpty(color) && !TextUtils.isEmpty(symbol)) {
                                 String markerURL = MapboxUtils.markerIconURL(context, size, symbol, color);
                                 if (!TextUtils.isEmpty(markerURL)) {
-                                    iconURLStrings.add(markerURL);
-
+//                                    iconURLStrings.add(markerURL);
+                                    insertPendingURLIntoLocalStore(markerURL);
+                                    markerIconURLStringsCount++;
                                 }
                             }
                         }
@@ -789,7 +899,7 @@ public class OfflineMapDownloader implements MapboxConstants {
 
         // Return only the unique icon urls
         //
-        return iconURLStrings;
+//        return iconURLStrings;
     }
 
     public void cancelImmediatelyWithError(String error) {
@@ -903,9 +1013,10 @@ public class OfflineMapDownloader implements MapboxConstants {
         return mutableOfflineMapDatabases;
     }
 
-    public boolean isMapIdAlreadyAnOfflineMapDatabase(String mapId) {
+    // TODO : IVAN : ENSURE that the UniqueID used is the Site ID!
+    public boolean isMapIdAlreadyAnOfflineMapDatabase(String uniqueID) {
         for (OfflineMapDatabase db : getMutableOfflineMapDatabases()) {
-            if (db.getMapID().equals(mapId)) {
+            if (db.getMapID().equals(uniqueID)) {
                 return true;
             }
         }
@@ -924,7 +1035,26 @@ public class OfflineMapDownloader implements MapboxConstants {
         // Remove Offline Database SQLite file
         SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(offlineMapDatabase.getMapID()).getReadableDatabase();
         String dbPath = db.getPath();
-        db.close();
+
+        File dbFile = new File(dbPath);
+        boolean result = dbFile.delete();
+        Log.i(TAG, String.format(MAPBOX_LOCALE, "Result of removing database file: %s", result));
+        return result;
+    }
+
+    // TODO : IVAN : Remove the persisted, UUID version of the map cache
+    public boolean removeOfflineMapDatabase(OfflineMapDatabase offlineMapDatabase, String uniqueID) {
+        // Mark the offline map object as invalid in case there are any references to it still floating around
+        //
+        offlineMapDatabase.invalidate();
+
+        // Remove the offline map object from the array and delete it's backing database
+        //
+        mutableOfflineMapDatabases.remove(offlineMapDatabase);
+
+        // Remove Offline Database SQLite file
+        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(uniqueID).getReadableDatabase();
+        String dbPath = db.getPath();
 
         File dbFile = new File(dbPath);
         boolean result = dbFile.delete();
