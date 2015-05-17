@@ -18,7 +18,7 @@ public class OfflineMapDatabase implements MapboxConstants {
 
     private Context context;
 
-    private String uniqueID;
+    private String mUniqueID;
     private String mapID;
     private boolean includesMetadata;
     private boolean includesMarkers;
@@ -51,8 +51,15 @@ public class OfflineMapDatabase implements MapboxConstants {
         this.mapID = mapID;
     }
 
+    public OfflineMapDatabase(Context context, String mapID, String uniqueID) {
+        super();
+        this.context = context;
+        this.mapID = mapID;
+        this.mUniqueID = uniqueID;
+    }
+
     public String getUniqueID() {
-        return uniqueID;
+        return mUniqueID;
     }
 
     public String getMapID() {
@@ -81,19 +88,41 @@ public class OfflineMapDatabase implements MapboxConstants {
         String minimumZ = sqliteMetadataForName("minimumZ");
         String maximumZ = sqliteMetadataForName("maximumZ");
 
-        if (TextUtils.isEmpty(uniqueID)) {
-            uniqueID = String.format(MAPBOX_LOCALE, "%s-%s-%s-%s-%s-%s-%s-%d", mapID, region_latitude, region_longitude, region_latitude_delta, region_longitude_delta, minimumZ, maximumZ, new Date().getTime() / 1000L);
+        Log.d("INIT_DATABASE_READS", uniqueID + " " +
+                        mapID + " " +
+                        includesMetadata + " " +
+                        includesMarkers + " " +
+                        imageQuality + " " +
+                        region_latitude + " " +
+                        region_longitude + " " +
+                        region_latitude_delta + " " +
+                        region_longitude_delta + " " +
+                        minimumZ + " " +
+                        maximumZ
+        );
+
+        if(TextUtils.isEmpty(mUniqueID)) {
+            if (TextUtils.isEmpty(uniqueID)) {
+                uniqueID = String.format(MAPBOX_LOCALE, "%s-%s-%s-%s-%s-%s-%s-%d", mapID, region_latitude, region_longitude, region_latitude_delta, region_longitude_delta, minimumZ, maximumZ, new Date().getTime() / 1000L);
+            }
         }
 
-        if (!TextUtils.isEmpty(mapID) && !TextUtils.isEmpty(includesMetadata) && !TextUtils.isEmpty(includesMarkers) && !TextUtils.isEmpty(imageQuality)
-                && !TextUtils.isEmpty(region_latitude) && !TextUtils.isEmpty(region_longitude) && !TextUtils.isEmpty(region_latitude_delta) && !TextUtils.isEmpty(region_longitude_delta)
-                && !TextUtils.isEmpty(minimumZ) && !TextUtils.isEmpty(maximumZ)
+        if (!TextUtils.isEmpty(mapID) &&
+                !TextUtils.isEmpty(includesMetadata) &&
+                !TextUtils.isEmpty(includesMarkers) &&
+                !TextUtils.isEmpty(imageQuality) &&
+                !TextUtils.isEmpty(region_latitude) &&
+                !TextUtils.isEmpty(region_longitude) &&
+                !TextUtils.isEmpty(region_latitude_delta) &&
+                !TextUtils.isEmpty(region_longitude_delta) &&
+                !TextUtils.isEmpty(minimumZ) &&
+                !TextUtils.isEmpty(maximumZ)
                 ) {
             // Reaching this point means that the specified database file at path pointed to an sqlite file which had
             // all the required values in its metadata table. That means the file passed the test for being a valid
             // offline map database.
             //
-            this.uniqueID = uniqueID;
+            this.mUniqueID = uniqueID;
             this.mapID = mapID;
             this.includesMetadata = "YES".equalsIgnoreCase(includesMetadata);
             this.includesMarkers = "YES".equalsIgnoreCase(includesMarkers);
@@ -140,7 +169,7 @@ public class OfflineMapDatabase implements MapboxConstants {
         }
 
         String query = "SELECT " + OfflineDatabaseHandler.FIELD_METADATA_VALUE + " FROM " + OfflineDatabaseHandler.TABLE_METADATA + " WHERE " + OfflineDatabaseHandler.FIELD_METADATA_NAME + "='" + name + "';";
-        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getReadableDatabase();
+        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mUniqueID).getReadableDatabase();
         Cursor cursor = db.rawQuery(query, null);
         if (cursor != null && cursor.moveToFirst()) {
             String res = cursor.getString(cursor.getColumnIndex(OfflineDatabaseHandler.FIELD_METADATA_VALUE));
@@ -155,7 +184,7 @@ public class OfflineMapDatabase implements MapboxConstants {
         if (mapID == null) {
             return null;
         }
-        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mapID).getReadableDatabase();
+        SQLiteDatabase db = OfflineDatabaseManager.getOfflineDatabaseManager(context).getOfflineDatabaseHandlerForMapId(mUniqueID).getReadableDatabase();
         String query = "SELECT " + OfflineDatabaseHandler.FIELD_DATA_VALUE + " FROM " + OfflineDatabaseHandler.TABLE_DATA + " WHERE " + OfflineDatabaseHandler.FIELD_DATA_ID + "= (SELECT " + OfflineDatabaseHandler.FIELD_RESOURCES_ID + " from " + OfflineDatabaseHandler.TABLE_RESOURCES + " where " + OfflineDatabaseHandler.FIELD_RESOURCES_URL + " = '" + url + "');";
         Cursor cursor = db.rawQuery(query, null);
         if (cursor != null && cursor.moveToFirst()) {

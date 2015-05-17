@@ -205,6 +205,7 @@ public class OfflineMapDownloader implements MapboxConstants {
 
         if (dbPath.endsWith("-PARTIAL")) {
             // Rename SQLlite database file
+            db.close();
             File oldDb = new File(dbPath);
 //            String newDb = dbPath.substring(0, dbPath.indexOf("-PARTIAL"));
             // TODO : IVAN : Use the current unique download ID to rename the db.
@@ -212,7 +213,8 @@ public class OfflineMapDownloader implements MapboxConstants {
                 Log.d("OFFLINE_PERSIST", "Save will fail - unique identifier not properly set. Stopping save.");
                 return null;
             }
-            String newDb = currentOfflineMapIdentifier;
+            String pathOnly = dbPath.substring(0, dbPath.indexOf(mapID));
+            String newDb = pathOnly + currentOfflineMapIdentifier;
             boolean result = oldDb.renameTo(new File(newDb));
             Log.i(TAG, "Result of rename = " + result + " for oldDb = '" + dbPath + "'; newDB = '" + newDb + "'");
         }
@@ -225,7 +227,7 @@ public class OfflineMapDownloader implements MapboxConstants {
         OfflineDatabaseManager.getOfflineDatabaseManager(context).switchHandlerFromPartialToRegular(mapID, currentOfflineMapIdentifier);
 
         // Create DB object and return
-        OfflineMapDatabase offlineMapDatabase = new OfflineMapDatabase(context, mapID);
+        OfflineMapDatabase offlineMapDatabase = new OfflineMapDatabase(context, mapID, currentOfflineMapIdentifier);
         // Initialized with data from database
         offlineMapDatabase.initializeDatabase();
         return offlineMapDatabase;
@@ -415,11 +417,10 @@ public class OfflineMapDownloader implements MapboxConstants {
         @Override
         public void run() {
             HttpURLConnection conn = null;
-            Log.w(TAG, "DO IN BACKGROUND");
             try {
 //                URL thisURL = new URL(currentURL);
                 conn = NetworkUtils.getHttpURLConnection(mURL);
-                Log.d(TAG, "URL to download = " + conn.getURL().toString());
+//                Log.d(TAG, "URL to download = " + conn.getURL().toString());
                 conn.setConnectTimeout(60000);
                 conn.connect();
                 int rc = conn.getResponseCode();
@@ -642,6 +643,8 @@ public class OfflineMapDownloader implements MapboxConstants {
         this.totalFilesExpectedToWrite = cursor.getInt(0);
         this.totalFilesWritten = cursor.getInt(1);
         success = true;
+        db.close();
+        cursor.close();
 
         return success;
     }
@@ -686,7 +689,8 @@ public class OfflineMapDownloader implements MapboxConstants {
 
         // Start a download job to retrieve all the resources needed for using the specified map offline
         //
-        this.uniqueID = UUID.randomUUID().toString();
+//        this.uniqueID = UUID.randomUUID().toString();
+        this.uniqueID = currentOfflineMapIdentifier;
         this.mapID = mapID;
         this.includesMetadata = includeMetadata;
         this.includesMarkers = includeMarkers;
@@ -1011,6 +1015,15 @@ public class OfflineMapDownloader implements MapboxConstants {
     public ArrayList<OfflineMapDatabase> getMutableOfflineMapDatabases() {
         // Return an array with offline map database objects representing each of the *complete* map databases on disk
         return mutableOfflineMapDatabases;
+    }
+
+    public OfflineMapDatabase getOfflineMapDatabaseWithID(String id) {
+        for(OfflineMapDatabase offlineMapDatabase : mutableOfflineMapDatabases) {
+            if (offlineMapDatabase.getUniqueID().equals(id)) {
+                return offlineMapDatabase;
+            }
+        }
+        return null;
     }
 
     // TODO : IVAN : ENSURE that the UniqueID used is the Site ID!
