@@ -42,7 +42,8 @@ public class MapTile implements GeoConstants, MapboxConstants, TileLayerConstant
         this.z = az;
         this.x = ax;
         this.y = ay;
-        this.path = String.format(MAPBOX_LOCALE, "%d/%d/%d", z, x, y);
+//        this.path = String.format(MAPBOX_LOCALE, "%d/%d/%d", z, x, y);
+        this.path = (new StringBuilder()).append(z).append('/').append(x).append('/').append(y).toString();
         this.cacheKey = aCacheKey + "/" + path;
         this.code = ((17 * (37 + z)) * (37 * x)) * (37 + y);
     }

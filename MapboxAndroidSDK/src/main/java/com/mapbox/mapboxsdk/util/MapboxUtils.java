@@ -114,7 +114,15 @@ public class MapboxUtils implements MapboxConstants {
     }
 
     public static String getMapTileURL(Context context, String mapID, int zoom, int x, int y, RasterImageQuality imageQuality) {
-        return String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s/%d/%d/%d%s.%s?access_token=%s", mapID, zoom, x, y, "", MapboxUtils.qualityExtensionForImageQuality(imageQuality), MapboxUtils.getAccessToken());
+//        return String.format(MAPBOX_LOCALE, MAPBOX_BASE_URL_V4 + "%s/%d/%d/%d%s.%s?access_token=%s", mapID, zoom, x, y, "", MapboxUtils.qualityExtensionForImageQuality(imageQuality), MapboxUtils.getAccessToken());
+        return (new StringBuilder(MAPBOX_BASE_URL_V4))
+                .append(mapID).append('/')
+                .append(zoom).append('/')
+                .append(x).append('/')
+                .append(y).append('.')
+                .append(MapboxUtils.qualityExtensionForImageQuality(imageQuality))
+                .append("?access_token=").append(MapboxUtils.getAccessToken())
+                .toString();
     }
 
     /**

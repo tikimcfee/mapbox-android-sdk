@@ -2,14 +2,16 @@ package com.mapbox.mapboxsdk.offline;
 
 import android.content.Context;
 import android.text.TextUtils;
+import android.util.Log;
 
+import java.util.Enumeration;
 import java.util.Hashtable;
 
 public class OfflineDatabaseManager {
 
     private static OfflineDatabaseManager offlineDatabaseManager = null;
 
-    private Hashtable<String, OfflineDatabaseHandler> databaseHandlers = null;
+    public Hashtable<String, OfflineDatabaseHandler> databaseHandlers = null;
 
     private static Context context = null;
 
@@ -24,6 +26,15 @@ public class OfflineDatabaseManager {
         }
         context = ctx;
         return offlineDatabaseManager;
+    }
+
+    public OfflineDatabaseHandler getOfflineDatabaseHandlerForUniqueID(String UID) {
+        Enumeration<String> keys = databaseHandlers.keys();
+        if (databaseHandlers.containsKey(UID)) {
+            return databaseHandlers.get(UID);
+        }
+
+        return null;
     }
 
     public OfflineDatabaseHandler getOfflineDatabaseHandlerForMapId(String mapId) {
@@ -63,21 +74,6 @@ public class OfflineDatabaseManager {
         OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, key);
         databaseHandlers.remove(key);
         databaseHandlers.put(key, dbh);
-        return true;
-    }
-
-    public boolean switchHandlerFromPartialToRegular(String mapId, String newUniquedID) {
-        if (TextUtils.isEmpty(mapId) || TextUtils.isEmpty(newUniquedID)) {
-            return false;
-        }
-        String key = mapId.toLowerCase();
-        if (!databaseHandlers.containsKey(key)) {
-            return false;
-        }
-
-        OfflineDatabaseHandler dbh = new OfflineDatabaseHandler(context, key);
-        databaseHandlers.remove(key);
-        databaseHandlers.put(newUniquedID, dbh);
         return true;
     }
 }
