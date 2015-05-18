@@ -6,10 +6,9 @@ import android.content.ContextWrapper;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.AsyncTask;
-import android.os.Handler;
-import android.os.Looper;
 import android.text.TextUtils;
 import android.util.Log;
+
 import com.mapbox.mapboxsdk.constants.MapboxConstants;
 import com.mapbox.mapboxsdk.constants.MathConstants;
 import com.mapbox.mapboxsdk.geometry.CoordinateRegion;
@@ -17,9 +16,11 @@ import com.mapbox.mapboxsdk.util.AppUtils;
 import com.mapbox.mapboxsdk.util.DataLoadingUtils;
 import com.mapbox.mapboxsdk.util.MapboxUtils;
 import com.mapbox.mapboxsdk.util.NetworkUtils;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -32,7 +33,6 @@ import java.net.URL;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Hashtable;
-import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
@@ -270,7 +270,7 @@ public class OfflineMapDownloader implements MapboxConstants {
 
         // Update expected files numbers (totalFilesExpectedToWrite and totalFilesWritten)
         sqliteQueryWrittenAndExpectedCountsWithError();
-        Log.d(TAG, String.format(MAPBOX_LOCALE, "totalFilesExpectedToWrite = %d, totalFilesWritten = %d", this.totalFilesExpectedToWrite, this.totalFilesWritten));
+//        Log.d(TAG, String.format(MAPBOX_LOCALE, "totalFilesExpectedToWrite = %d, totalFilesWritten = %d", this.totalFilesExpectedToWrite, this.totalFilesWritten));
 
 //        [_sqliteQueue addOperationWithBlock:^{
         // Get the actual URLs
@@ -570,7 +570,7 @@ public class OfflineMapDownloader implements MapboxConstants {
         //
         this.totalFilesWritten += 1;
         notifyDelegateOfProgress();
-        Log.d(TAG, "totalFilesWritten = " + this.totalFilesWritten + "; totalFilesExpectedToWrite = " + this.totalFilesExpectedToWrite);
+//        Log.d(TAG, "totalFilesWritten = " + this.totalFilesWritten + "; totalFilesExpectedToWrite = " + this.totalFilesExpectedToWrite);
 
         // If all the downloads are done, clean up and notify the delegate
         //
@@ -768,7 +768,7 @@ public class OfflineMapDownloader implements MapboxConstants {
 
 
 //        Log.i(TAG, "Number of URLs so far: " + urls.size());
-        Log.i(TAG, "Number of URLs so far: " + totalFilesExpectedToWrite);
+//        Log.i(TAG, "Number of URLs so far: " + totalFilesExpectedToWrite);
 
         // Determine if we need to add marker icon urls (i.e. parse markers.geojson/features.json), and if so, add them
         //

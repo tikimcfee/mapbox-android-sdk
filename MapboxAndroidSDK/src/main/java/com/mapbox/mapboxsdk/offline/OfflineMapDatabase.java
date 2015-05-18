@@ -2,19 +2,14 @@ package com.mapbox.mapboxsdk.offline;
 
 import android.content.Context;
 import android.database.Cursor;
-import android.database.DatabaseUtils;
 import android.database.sqlite.SQLiteDatabase;
 import android.text.TextUtils;
 import android.util.Log;
+
 import com.mapbox.mapboxsdk.constants.MapboxConstants;
 import com.mapbox.mapboxsdk.exceptions.OfflineDatabaseException;
-import com.mapbox.mapboxsdk.geometry.CoordinateRegion;
-import com.mapbox.mapboxsdk.geometry.CoordinateSpan;
-import com.mapbox.mapboxsdk.geometry.LatLng;
+
 import java.util.Date;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.Hashtable;
 
 public class OfflineMapDatabase implements MapboxConstants {
 
@@ -147,8 +142,6 @@ public class OfflineMapDatabase implements MapboxConstants {
         if (cursor == null)
             return null;
 
-        String OUT = DatabaseUtils.dumpCursorToString(cursor);
-        Log.d("SQLITE_METADATA", "Cursor is : " + OUT);
         String res = null;
         if (cursor.moveToFirst()) {
             res = cursor.getString(cursor.getColumnIndex(OfflineDatabaseHandler.FIELD_METADATA_VALUE));
